@@ -18,11 +18,20 @@ from pawlib import credstore
 from pawlib import providers
 from pawlib import s3client
 from pawlib import selfupdate
+from pawlib import ui
 from pawlib import uploader
 
 
 def _err(msg):
-    print(f"错误：{msg}", file=sys.stderr)
+    ui.fail(msg)
+
+
+def _fmt_size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n}B"
 
 
 def _load_profile(args):
@@ -58,12 +67,13 @@ def _copy_to_clipboard(text):
 # ------------------------------------------------------------------ config
 
 def cmd_config_init(args):
-    print("pic-any-where 初始化向导（Ctrl-C 取消）\n")
+    ui.header("pic-any-where 初始化向导（Ctrl-C 取消）", stream=sys.stdout)
+    print()
 
     names = sorted(providers.PROVIDERS)
     for i, name in enumerate(names, 1):
         p = providers.PROVIDERS[name]
-        print(f"  {i}. {p['display']}（{name}）")
+        print(f"  {ui.paint('36', str(i), sys.stdout)}. {p['display']}（{name}）")
     while True:
         choice = input("选择厂商 [序号或名称]: ").strip()
         if choice in names:
@@ -72,9 +82,9 @@ def cmd_config_init(args):
         if choice.isdigit() and 1 <= int(choice) <= len(names):
             provider = names[int(choice) - 1]
             break
-        print("  无效输入，请重试")
+        ui.warn("无效输入，请重试")
     preset = providers.PROVIDERS[provider]
-    print(f"提示：{preset['hint']}")
+    ui.info(preset["hint"])
 
     region_default = preset["default_region"]
     if preset["common_regions"]:
@@ -118,10 +128,11 @@ def cmd_config_init(args):
     name = input("profile 名称 [default]: ").strip() or "default"
     cfg.set_profile(data, name, profile)
     path = cfg.save_config(data)
-    print(f"\n配置已保存：{path}")
+    print()
+    ui.ok(f"配置已保存：{path}", stream=sys.stdout)
 
     # 凭证写入钥匙串
-    print("\n接下来配置凭证（将写入系统钥匙串，不会显示也不会落盘明文）。")
+    ui.info("接下来配置凭证（将写入系统钥匙串，不会显示也不会落盘明文）", stream=sys.stdout)
     if input("现在配置凭证？[Y/n]: ").strip().lower() not in ("n", "no"):
         return _interactive_set_credential(name)
     print(f"可稍后运行：{os.path.basename(__file__)} config set-credential --profile {name}")
@@ -143,7 +154,7 @@ def _interactive_set_credential(profile_name):
         return 1
     backend_name = credstore.store_credentials(
         profile_name, access_key, secret_key, token)
-    print(f"凭证已写入 {backend_name}（条目：{credstore.SERVICE_NAME}/{profile_name}）")
+    ui.ok(f"凭证已写入 {backend_name}（条目：{credstore.SERVICE_NAME}/{profile_name}）", stream=sys.stdout)
     return 0
 
 
@@ -176,8 +187,8 @@ def cmd_config_set(args):
 
     cfg.set_profile(data, name, profile)
     path = cfg.save_config(data)
-    print(f"配置已保存：{path}（profile={name}）")
-    print(f"云端连通性可运行 {os.path.basename(__file__)} doctor --profile {name} 验证")
+    ui.ok(f"配置已保存：{path}（profile={name}）", stream=sys.stdout)
+    ui.dim(f"云端连通性可运行 {os.path.basename(__file__)} doctor --profile {name} 验证", stream=sys.stdout)
     return 0
 
 
@@ -191,22 +202,23 @@ def cmd_config_show(args):
     data = cfg.load_config()
     path = cfg.config_path()
     if not data["profiles"]:
-        print(f"尚无配置（{path}），请先运行 config init")
+        ui.dim(f"尚无配置（{path}），请先运行 config init", stream=sys.stdout)
         return 0
-    print(f"配置文件：{path}")
-    print(f"默认 profile：{data.get('default_profile')}")
+    ui.dim(f"配置文件：{path}", stream=sys.stdout)
+    ui.dim(f"默认 profile：{data.get('default_profile')}", stream=sys.stdout)
     for name, p in sorted(data["profiles"].items()):
-        print(f"\n[{name}]")
+        print()
+        print(ui.paint("1", f"[{name}]", sys.stdout))
         for key in cfg.PROFILE_FIELDS:
             if key in p and p[key] is not None:
-                print(f"  {key} = {p[key]}")
+                print(f"  {ui.paint('36', key, sys.stdout)} = {p[key]}")
         try:
             creds = credstore.resolve_credentials(dict(p, _name=name))
             print(f"  凭证来源 = {creds.source}（{credstore.redact(creds.access_key)}）")
         except credstore.CredentialError:
-            print("  凭证来源 = 未配置")
+            print(f"  凭证来源 = {ui.paint('33', '未配置', sys.stdout)}")
     for w in cfg.check_config_permissions():
-        print(f"\n警告：{w}")
+        ui.warn(w)
     return 0
 
 
@@ -217,12 +229,16 @@ def cmd_doctor(args):
 
     def check(label, passed, detail=""):
         nonlocal ok
-        mark = "✓" if passed else "✗"
-        print(f"  [{mark}] {label}" + (f" — {detail}" if detail else ""))
+        text = label + (f" — {detail}" if detail else "")
+        if passed:
+            ui.ok(text, stream=sys.stdout)
+        else:
+            ui.fail(text, stream=sys.stdout)
         if not passed:
             ok = False
 
-    print("pic-any-where 自检\n")
+    ui.header("pic-any-where 自检", stream=sys.stdout)
+    print()
 
     try:
         profile = _load_profile(args)
@@ -244,7 +260,7 @@ def cmd_doctor(args):
         return 1
 
     if profile.get("insecure_http"):
-        print("  [!] 传输加密 — 已允许 HTTP（仅建议本地测试环境）")
+        ui.warn("传输加密 — 已允许 HTTP（仅建议本地测试环境）", stream=sys.stdout)
     else:
         check("传输加密", True, "HTTPS")
 
@@ -269,7 +285,11 @@ def cmd_doctor(args):
         except Exception as e:
             check("写权限探测（PUT+DELETE）", False, str(e))
 
-    print("\n结果：" + ("全部通过" if ok else "存在失败项，请按提示修复"))
+    print()
+    if ok:
+        ui.ok("结果：全部通过", stream=sys.stdout)
+    else:
+        ui.fail("结果：存在失败项，请按提示修复", stream=sys.stdout)
     return 0 if ok else 1
 
 
@@ -283,27 +303,31 @@ def cmd_upload(args):
         return 1
     rc = 0
     outputs = []
-    for path in args.files:
+    total = len(args.files)
+    for i, path in enumerate(args.files, 1):
         try:
+            size = os.path.getsize(path) if os.path.isfile(path) else 0
+            ui.info(f"[{i}/{total}] 上传中 {path}（{_fmt_size(size)}）…")
             key, url = uploader.upload_file(client, profile, path, key=args.key,
-                                        prefix=args.prefix, public=args.public)
+                                       prefix=args.prefix, public=args.public)
             alt = os.path.splitext(os.path.basename(path))[0]
             outputs.append(uploader.format_output(url, args.format, alt))
+            ui.ok(f"{path} → {key}")
             if not profile.get("public_base_url"):
-                print(f"提示：未配置自定义域名，以上 URL 指向存储默认域名；"
-                      f"若桶为私有可用 url 子命令 --presign 生成临时链接",
-                      file=sys.stderr)
+                ui.warn("未配置自定义域名，URL 指向存储默认域名；私有桶可用 url 子命令 --presign 生成临时链接")
         except (uploader.UploadError, s3client.S3Error) as e:
-            _err(f"{path}: {e}")
+            ui.fail(f"{path}: {e}")
             rc = 1
     for line in outputs:
-        print(line)
+        ui.url_out(line)
+    if total > 1 or rc:
+        ui.info(f"完成：{len(outputs)}/{total} 个文件上传成功")
     if args.copy and outputs:
         text = "\n".join(outputs)
         if _copy_to_clipboard(text):
-            print("（已复制到剪贴板）", file=sys.stderr)
+            ui.dim("已复制到剪贴板")
         else:
-            print("（未找到可用的剪贴板工具，跳过复制）", file=sys.stderr)
+            ui.warn("未找到可用的剪贴板工具，跳过复制")
     return rc
 
 
@@ -312,18 +336,24 @@ def cmd_url(args):
     key = uploader.sanitize_key(args.key)
     if args.presign:
         client, _ = _make_client(profile)
-        print(client.presign_get(key, expires=args.presign))
+        ui.url_out(client.presign_get(key, expires=args.presign))
     else:
-        print(uploader.public_url(profile, key))
+        ui.url_out(uploader.public_url(profile, key))
     return 0
 
 
 def cmd_ls(args):
     profile = _load_profile(args)
     client, _ = _make_client(profile)
-    for item in client.list_objects(prefix=args.prefix or "",
-                                    max_keys=args.max_keys):
-        print(f"{item['size']:>12}  {item['last_modified']}  {item['key']}")
+    items = client.list_objects(prefix=args.prefix or "", max_keys=args.max_keys)
+    if not items:
+        ui.dim("（没有对象）", stream=sys.stdout)
+        return 0
+    for item in items:
+        size = ui.paint("2", f"{item['size']:>12}", sys.stdout)
+        key = ui.paint("36", item["key"], sys.stdout)
+        print(f"{size}  {item['last_modified']}  {key}")
+    ui.dim(f"共 {len(items)} 个对象", stream=sys.stdout)
     return 0
 
 
@@ -332,13 +362,13 @@ def cmd_rm(args):
     client, _ = _make_client(profile)
     key = uploader.sanitize_key(args.key)
     client.delete_object(key)
-    print(f"已删除：{key}")
+    ui.ok(f"已删除：{key}", stream=sys.stdout)
     return 0
 
 
 def cmd_self_update(args):
     updated, summary = selfupdate.self_update()
-    print(summary)
+    (ui.ok if updated else ui.dim)(summary, stream=sys.stdout)
     return 0
 
 
@@ -407,6 +437,7 @@ def build_parser():
 
 
 def main(argv=None):
+    ui.enable_windows_ansi()
     args = build_parser().parse_args(argv)
     handlers = {
         ("config", "init"): cmd_config_init,
@@ -427,7 +458,7 @@ def main(argv=None):
         _err(str(e))
         return 1
     except KeyboardInterrupt:
-        print("\n已取消", file=sys.stderr)
+        ui.dim("\n已取消")
         return 130
 
 
