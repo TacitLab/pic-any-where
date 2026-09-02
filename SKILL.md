@@ -67,6 +67,16 @@ python3 scripts/paw.py rm <key>                            # 删除（先确认�
 
 多 bucket/多厂商场景用 `--profile <名称>` 切换（全局参数，放子命令前后均可）。
 
+### 5. 更新本技能
+
+```bash
+python3 scripts/paw.py self-update
+```
+
+从其 git 安装来源拉取最新提交（fast-forward only）。安装目录存在未提交的
+本地改动时会拒绝执行并列出改动文件，此时不要擅自提交或还原，先把情况告诉用户。
+若目录不是 git 工作副本（如下载解压安装），提示用户改用 git clone 重新安装。
+
 ## 故障排查
 
 | 现象 | 处理 |

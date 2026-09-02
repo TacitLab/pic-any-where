@@ -17,6 +17,7 @@ from pawlib import config as cfg
 from pawlib import credstore
 from pawlib import providers
 from pawlib import s3client
+from pawlib import selfupdate
 from pawlib import uploader
 
 
@@ -300,6 +301,12 @@ def cmd_rm(args):
     return 0
 
 
+def cmd_self_update(args):
+    updated, summary = selfupdate.self_update()
+    print(summary)
+    return 0
+
+
 # ------------------------------------------------------------------ main
 
 def build_parser():
@@ -343,6 +350,8 @@ def build_parser():
 
     p_rm = sub.add_parser("rm", help="删除对象", parents=[common])
     p_rm.add_argument("key")
+
+    sub.add_parser("self-update", help="从 git 仓库拉取最新提交更新本工具")
     return parser
 
 
@@ -357,11 +366,12 @@ def main(argv=None):
         handler = handlers[(args.command, args.config_command)]
     else:
         handler = {"doctor": cmd_doctor, "upload": cmd_upload,
-                   "url": cmd_url, "ls": cmd_ls, "rm": cmd_rm}[args.command]
+                   "url": cmd_url, "ls": cmd_ls, "rm": cmd_rm,
+                   "self-update": cmd_self_update}[args.command]
     try:
         return handler(args)
     except (cfg.ConfigError, credstore.CredentialError,
-            providers.ProviderError) as e:
+            providers.ProviderError, selfupdate.UpdateError) as e:
         _err(str(e))
         return 1
     except KeyboardInterrupt:

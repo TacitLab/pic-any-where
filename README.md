@@ -12,8 +12,14 @@
 
 ## 安装为 Agent Skill
 
-把本仓库目录放入 skills 目录（如 `~/.claude/skills/` 或项目的 `.agents/skills/`），
-Agent 会在你需要"上传图片到图床"时自动使用 `SKILL.md`。
+把本仓库 clone 到 skills 目录（如 `~/.claude/skills/` 或项目的 `.agents/skills/`），
+Agent 会在你需要"上传图片到图床"时自动使用 `SKILL.md`：
+
+```bash
+git clone git@github.com:TacitLab/pic-any-where.git ~/.claude/skills/pic-any-where
+```
+
+以 git 方式安装后，可随时运行 `python3 scripts/paw.py self-update` 拉取最新版本。
 
 ## 快速开始（CLI）
 
@@ -43,6 +49,7 @@ python3 scripts/paw.py upload a.png b.jpg --format markdown --copy
 | `url <key> [--presign 秒]` | 生成访问链接 / 私有桶临时链接 |
 | `ls [--prefix P]` | 列出对象 |
 | `rm <key>` | 删除对象 |
+| `self-update` | 从 git 仓库拉取最新提交（ff-only，有本地改动时拒绝） |
 
 全局参数 `--profile <名称>` 用于多 bucket / 多厂商切换。
 
