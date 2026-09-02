@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""paw — pic-any-where 命令行入口：把 S3 兼容对象存储当作个人图床。
+
+用法见各子命令 --help。凭证从不通过命令行参数传入。
+"""
+
+import argparse
+import getpass
+import os
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from pawlib import config as cfg
+from pawlib import credstore
+from pawlib import providers
+from pawlib import s3client
+from pawlib import uploader
+
+
+def _err(msg):
+    print(f"错误：{msg}", file=sys.stderr)
+
+
+def _load_profile(args):
+    data = cfg.load_config()
+    return cfg.get_profile(data, getattr(args, "profile", None))
+
+
+def _make_client(profile):
+    creds = credstore.resolve_credentials(profile)
+    return s3client.S3Client(profile, creds), creds
+
+
+def _copy_to_clipboard(text):
+    candidates = []
+    if sys.platform == "darwin":
+        candidates = [["pbcopy"]]
+    elif sys.platform == "win32":
+        candidates = [["clip"]]
+    else:
+        candidates = [["wl-copy"], ["xclip", "-selection", "clipboard"],
+                      ["xsel", "--clipboard", "--input"]]
+    for cmd in candidates:
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text, text=True,
+                               capture_output=True, check=True)
+                return True
+            except subprocess.CalledProcessError:
+                continue
+    return False
+
+
+# ------------------------------------------------------------------ config
+
+def cmd_config_init(args):
+    print("pic-any-where 初始化向导（Ctrl-C 取消）\n")
+
+    names = sorted(providers.PROVIDERS)
+    for i, name in enumerate(names, 1):
+        p = providers.PROVIDERS[name]
+        print(f"  {i}. {p['display']}（{name}）")
+    while True:
+        choice = input("选择厂商 [序号或名称]: ").strip()
+        if choice in names:
+            provider = choice
+            break
+        if choice.isdigit() and 1 <= int(choice) <= len(names):
+            provider = names[int(choice) - 1]
+            break
+        print("  无效输入，请重试")
+    preset = providers.PROVIDERS[provider]
+    print(f"提示：{preset['hint']}")
+
+    region_default = preset["default_region"]
+    if preset["common_regions"]:
+        print("常用 region：" + ", ".join(preset["common_regions"]))
+    region = input(f"region [{region_default}]: ").strip() or region_default
+
+    account_id = None
+    if preset["needs_account_id"]:
+        account_id = input("Cloudflare Account ID: ").strip()
+
+    endpoint = None
+    addressing = None
+    if provider == "custom":
+        endpoint = input("endpoint（如 minio.example.com:9000，不含 scheme）: ").strip()
+        addressing = input("寻址风格 virtual/path [path]: ").strip() or "path"
+
+    bucket = input("bucket 名称: ").strip()
+    if not bucket:
+        _err("bucket 不能为空")
+        return 1
+
+    public_base = input("自定义访问域名（CDN/源站，如 https://img.example.com，可留空）: ").strip()
+    if public_base and not public_base.startswith("https://"):
+        _err("自定义域名必须使用 https://，请检查")
+        return 1
+
+    prefix = input("对象 key 前缀 [i/]: ").strip() or "i/"
+
+    profile = {
+        "provider": provider,
+        "region": region,
+        "bucket": bucket,
+        "account_id": account_id,
+        "endpoint": endpoint,
+        "addressing_style": addressing,
+        "public_base_url": public_base or None,
+        "key_prefix": prefix,
+    }
+
+    data = cfg.load_config()
+    name = input("profile 名称 [default]: ").strip() or "default"
+    cfg.set_profile(data, name, profile)
+    path = cfg.save_config(data)
+    print(f"\n配置已保存：{path}")
+
+    # 凭证写入钥匙串
+    print("\n接下来配置凭证（将写入系统钥匙串，不会显示也不会落盘明文）。")
+    if input("现在配置凭证？[Y/n]: ").strip().lower() not in ("n", "no"):
+        return _interactive_set_credential(name)
+    print(f"可稍后运行：{os.path.basename(__file__)} config set-credential --profile {name}")
+    return 0
+
+
+def _interactive_set_credential(profile_name):
+    backend = credstore.get_backend()
+    if backend is None:
+        _err("未检测到可用的系统钥匙串后端。请改用环境变量方式：\n"
+             "  export PAW_ACCESS_KEY_ID=...\n"
+             "  export PAW_SECRET_ACCESS_KEY=...")
+        return 1
+    access_key = input("AccessKey ID: ").strip()
+    secret_key = getpass.getpass("AccessKey Secret（输入不显示）: ").strip()
+    token = getpass.getpass("Session Token（临时凭证才需要，可留空）: ").strip() or None
+    if not access_key or not secret_key:
+        _err("AccessKey ID / Secret 不能为空")
+        return 1
+    backend_name = credstore.store_credentials(
+        profile_name, access_key, secret_key, token)
+    print(f"凭证已写入 {backend_name}（条目：{credstore.SERVICE_NAME}/{profile_name}）")
+    return 0
+
+
+def cmd_config_set_credential(args):
+    data = cfg.load_config()
+    profile = cfg.get_profile(data, args.profile)
+    return _interactive_set_credential(profile["_name"])
+
+
+def cmd_config_show(args):
+    data = cfg.load_config()
+    path = cfg.config_path()
+    if not data["profiles"]:
+        print(f"尚无配置（{path}），请先运行 config init")
+        return 0
+    print(f"配置文件：{path}")
+    print(f"默认 profile：{data.get('default_profile')}")
+    for name, p in sorted(data["profiles"].items()):
+        print(f"\n[{name}]")
+        for key in cfg.PROFILE_FIELDS:
+            if key in p and p[key] is not None:
+                print(f"  {key} = {p[key]}")
+        try:
+            creds = credstore.resolve_credentials(dict(p, _name=name))
+            print(f"  凭证来源 = {creds.source}（{credstore.redact(creds.access_key)}）")
+        except credstore.CredentialError:
+            print("  凭证来源 = 未配置")
+    for w in cfg.check_config_permissions():
+        print(f"\n警告：{w}")
+    return 0
+
+
+# ------------------------------------------------------------------ doctor
+
+def cmd_doctor(args):
+    ok = True
+
+    def check(label, passed, detail=""):
+        nonlocal ok
+        mark = "✓" if passed else "✗"
+        print(f"  [{mark}] {label}" + (f" — {detail}" if detail else ""))
+        if not passed:
+            ok = False
+
+    print("pic-any-where 自检\n")
+
+    try:
+        profile = _load_profile(args)
+        check("配置加载", True, f"profile={profile['_name']} bucket={profile.get('bucket')}")
+    except cfg.ConfigError as e:
+        check("配置加载", False, str(e))
+        return 1
+
+    backend = credstore.get_backend()
+    check("钥匙串后端", backend is not None,
+          backend.name if backend else "不可用，仅环境变量方式可用")
+
+    try:
+        creds = credstore.resolve_credentials(profile)
+        check("凭证解析", True, f"{creds.source}（{credstore.redact(creds.access_key)}）"
+              + ("，含临时 token" if creds.session_token else ""))
+    except credstore.CredentialError as e:
+        check("凭证解析", False, str(e))
+        return 1
+
+    if profile.get("insecure_http"):
+        print("  [!] 传输加密 — 已允许 HTTP（仅建议本地测试环境）")
+    else:
+        check("传输加密", True, "HTTPS")
+
+    if profile.get("public_base_url"):
+        check("自定义域名", profile["public_base_url"].startswith("https://"),
+              profile["public_base_url"])
+
+    try:
+        client, _ = _make_client(profile)
+        client.head_bucket()
+        check("云端连通（HEAD Bucket）", True, f"{client.host}")
+    except Exception as e:
+        check("云端连通（HEAD Bucket）", False, str(e))
+        return 1
+
+    if args.write:
+        probe = f"{profile.get('key_prefix', 'i/').rstrip('/')}/.paw-doctor-probe"
+        try:
+            client.put_object(probe, b"paw", "text/plain")
+            client.delete_object(probe)
+            check("写权限探测（PUT+DELETE）", True)
+        except Exception as e:
+            check("写权限探测（PUT+DELETE）", False, str(e))
+
+    print("\n结果：" + ("全部通过" if ok else "存在失败项，请按提示修复"))
+    return 0 if ok else 1
+
+
+# ------------------------------------------------------------------ 上传等
+
+def cmd_upload(args):
+    profile = _load_profile(args)
+    client, _ = _make_client(profile)
+    if args.key and len(args.files) > 1:
+        _err("--key 只能用于单文件上传")
+        return 1
+    rc = 0
+    outputs = []
+    for path in args.files:
+        try:
+            key, url = uploader.upload_file(client, profile, path, key=args.key)
+            alt = os.path.splitext(os.path.basename(path))[0]
+            outputs.append(uploader.format_output(url, args.format, alt))
+            if not profile.get("public_base_url"):
+                print(f"提示：未配置自定义域名，以上 URL 指向存储默认域名；"
+                      f"若桶为私有可用 url 子命令 --presign 生成临时链接",
+                      file=sys.stderr)
+        except (uploader.UploadError, s3client.S3Error) as e:
+            _err(f"{path}: {e}")
+            rc = 1
+    for line in outputs:
+        print(line)
+    if args.copy and outputs:
+        text = "\n".join(outputs)
+        if _copy_to_clipboard(text):
+            print("（已复制到剪贴板）", file=sys.stderr)
+        else:
+            print("（未找到可用的剪贴板工具，跳过复制）", file=sys.stderr)
+    return rc
+
+
+def cmd_url(args):
+    profile = _load_profile(args)
+    key = uploader.sanitize_key(args.key)
+    if args.presign:
+        client, _ = _make_client(profile)
+        print(client.presign_get(key, expires=args.presign))
+    else:
+        print(uploader.public_url(profile, key))
+    return 0
+
+
+def cmd_ls(args):
+    profile = _load_profile(args)
+    client, _ = _make_client(profile)
+    for item in client.list_objects(prefix=args.prefix or "",
+                                    max_keys=args.max_keys):
+        print(f"{item['size']:>12}  {item['last_modified']}  {item['key']}")
+    return 0
+
+
+def cmd_rm(args):
+    profile = _load_profile(args)
+    client, _ = _make_client(profile)
+    key = uploader.sanitize_key(args.key)
+    client.delete_object(key)
+    print(f"已删除：{key}")
+    return 0
+
+
+# ------------------------------------------------------------------ main
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="paw",
+        description="pic-any-where：把 S3 兼容对象存储当作个人图床")
+    parser.add_argument("--profile", help="使用指定 profile（默认取配置中的 default_profile）")
+    # 让 --profile 在子命令后也可用（SUPPRESS 避免覆盖顶层解析值）
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_config = sub.add_parser("config", help="配置管理", parents=[common])
+    config_sub = p_config.add_subparsers(dest="config_command", required=True)
+    config_sub.add_parser("init", help="交互式初始化向导")
+    config_sub.add_parser("show", help="显示当前配置（凭证脱敏）")
+    config_sub.add_parser("set-credential", help="将 AK/SK 写入系统钥匙串")
+
+    p_doctor = sub.add_parser("doctor", help="自检：配置 / 凭证 / 连通性",
+                              parents=[common])
+    p_doctor.add_argument("--write", action="store_true",
+                          help="额外做写权限探测（上传并删除一个小对象）")
+
+    p_upload = sub.add_parser("upload", help="上传图片并输出访问链接",
+                              parents=[common])
+    p_upload.add_argument("files", nargs="+", help="图片文件路径")
+    p_upload.add_argument("--key", help="自定义对象 key（仅单文件）")
+    p_upload.add_argument("--format", choices=["url", "markdown", "html"],
+                          default="url", help="输出格式")
+    p_upload.add_argument("--copy", action="store_true", help="复制结果到剪贴板")
+
+    p_url = sub.add_parser("url", help="由对象 key 生成访问链接", parents=[common])
+    p_url.add_argument("key")
+    p_url.add_argument("--presign", type=int, metavar="SECONDS",
+                       help="生成带签名的临时链接（私有桶用），参数为有效期秒数")
+
+    p_ls = sub.add_parser("ls", help="列出桶内对象", parents=[common])
+    p_ls.add_argument("--prefix", help="按 key 前缀过滤")
+    p_ls.add_argument("--max-keys", type=int, default=100)
+
+    p_rm = sub.add_parser("rm", help="删除对象", parents=[common])
+    p_rm.add_argument("key")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    handlers = {
+        ("config", "init"): cmd_config_init,
+        ("config", "show"): cmd_config_show,
+        ("config", "set-credential"): cmd_config_set_credential,
+    }
+    if args.command == "config":
+        handler = handlers[(args.command, args.config_command)]
+    else:
+        handler = {"doctor": cmd_doctor, "upload": cmd_upload,
+                   "url": cmd_url, "ls": cmd_ls, "rm": cmd_rm}[args.command]
+    try:
+        return handler(args)
+    except (cfg.ConfigError, credstore.CredentialError,
+            providers.ProviderError) as e:
+        _err(str(e))
+        return 1
+    except KeyboardInterrupt:
+        print("\n已取消", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
