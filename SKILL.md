@@ -1,10 +1,6 @@
 ---
 name: pic-any-where
-description: >-
-  把 S3 兼容对象存储（AWS S3、腾讯云 COS、阿里云 OSS、Cloudflare R2、七牛 Kodo、MinIO 等）
-  当作个人图床使用。上传本地图片并返回可访问链接（优先自定义域名/CDN），支持 URL、
-  Markdown、HTML 三种输出格式。当用户要求"上传图片到图床"、"生成图片链接"、
-  "image hosting / image bed / 图床 / 上传到 S3 / OSS / COS 并拿链接"时使用本技能。
+description: "把 S3 兼容对象存储（AWS S3、腾讯云 COS、阿里云 OSS、Cloudflare R2、七牛 Kodo、MinIO 等）当作个人图床使用：上传本地图片并返回可访问链接（优先自定义域名/CDN），支持 URL、Markdown、HTML 输出格式。当用户要求「上传图片到图床」「生成图片链接」「image hosting / image bed / 图床」「上传到 S3 / OSS / COS 并拿链接」时使用本技能。"
 ---
 
 # pic-any-where —— S3 对象存储图床
