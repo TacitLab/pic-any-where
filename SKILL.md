@@ -28,29 +28,55 @@ python3 scripts/paw.py doctor
 - 全部通过 → 直接进入第 3 步上传。
 - 提示"尚未配置"或凭证缺失 → 进入第 2 步。
 
-### 2. 首次配置（需要用户本人在终端操作）
+### 2. 首次配置
 
-让用户运行交互向导（选厂商 → region → bucket → 自定义域名 → 凭证入钥匙串）：
+**方式 A（推荐，对话内完成）**：在对话中向用户收集以下信息，然后直接执行非交互命令：
+
+- 厂商（aws / tencent / aliyun / cloudflare / qiniu / custom）
+- region、bucket 名称
+- 自定义访问域名（CDN/源站，可留空）
+- 上传目录前缀（如 `i/`、`blog/`）、对象 ACL（图床一般 `public-read`）
 
 ```bash
-python3 scripts/paw.py config init
+python3 scripts/paw.py config set --name default --provider tencent \
+    --region ap-guangzhou --bucket myimgs-1250000000 \
+    --key-prefix i/ --object-acl public-read \
+    --public-base-url https://img.example.com
 ```
 
-若用户已有环境变量或 `~/.aws/credentials`，doctor 会直接识别，可跳过向导。
+`config set` 只更新显式给出的字段，可反复执行做局部修改。
+多 bucket/多厂商就建多个 `--name`，用 `--profile` 切换。
+
+**凭证例外**：AK/SK 不能走对话（见安全红线）。配置完成后让用户自己在终端执行：
+
+```bash
+python3 scripts/paw.py config set-credential
+```
+
+若用户已有环境变量（`PAW_*` / `AWS_*`）或 `~/.aws/credentials`，可跳过此步。
+
+**方式 B**：用户更习惯向导时，让其自行运行 `python3 scripts/paw.py config init`。
+
 各厂商的 endpoint/region/注意事项见 [references/providers.md](references/providers.md)；
 最小权限策略与安全建议见 [references/security.md](references/security.md)。
+配置完成后跑 `python3 scripts/paw.py doctor` 验证。
 
 ### 3. 上传图片
 
 ```bash
 python3 scripts/paw.py upload /path/to/pic.png                # 输出 URL
 python3 scripts/paw.py upload a.png b.jpg --format markdown   # Markdown 格式
-python3 scripts/paw.py upload pic.png --copy                  # 复制到剪贴板
+python3 scripts/paw.py upload pic.png --copy              # 复制到剪贴板
+python3 scripts/paw.py upload pic.png --prefix blog/2024/     # 上传到桶内指定目录（覆盖 profile 的 key_prefix）
+python3 scripts/paw.py upload pic.png --public              # 本次上传设为公有读（x-amz-acl: public-read）
 ```
 
 - 上传成功只输出链接，逐文件一行；把链接原样交给用户。
-- 对象 key 自动按内容哈希命名（`i/YYYY/MM/<hash>.<ext>`），同图去重；
-  用户指定名称时用 `--key`（仅单文件）。
+- 对象 key 自动按内容哈希命名（`{prefix}/YYYY/MM/<hash>.<ext>`），同图去重；用户指定名称时用 `--key`（仅单文件）。
+- `--prefix` 指定上传到桶内某个目录（会覆盖配置里的 key_prefix），如 `blog/2024/`。
+- `--public` 本次上传设为公有读（`x-amz-acl: public-read`）；若 profile 已配
+  `object_acl: public-read` 则每次上传默认带公有读，无需再加。注意 R2 等不
+  支持对象 ACL 的厂商应靠桶/域名策略实现公开读。
 
 ### 4. 其他常用命令
 

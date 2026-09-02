@@ -110,11 +110,13 @@ class S3Client:
 
     # ------------------------------------------------------------ 高层操作
 
-    def put_object(self, key, data: bytes, content_type, cache_control=None):
+    def put_object(self, key, data: bytes, content_type, cache_control=None, acl=None):
         headers = {"Content-Type": content_type,
                    "Content-Length": str(len(data))}
         if cache_control:
             headers["Cache-Control"] = cache_control
+        if acl:
+            headers["x-amz-acl"] = acl
         self.request("PUT", key=key, data=data, extra_headers=headers)
 
     def delete_object(self, key):

@@ -112,6 +112,39 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(received["DELETE"][0], "/testbucket/i/x.png")
 
+    def test_upload_with_prefix_and_public(self):
+        pic = os.path.join(self.tmp.name, "p.png")
+        with open(pic, "wb") as f:
+            f.write(PNG)
+        r = self._run("upload", pic, "--prefix", "blog/2024", "--public")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("https://img.example.com/blog/2024/", r.stdout)
+        path, headers, body = received["PUT"]
+        self.assertTrue(path.startswith("/testbucket/blog/2024/"), path)
+        lower = {k.lower(): v for k, v in headers.items()}
+        self.assertEqual(lower.get("x-amz-acl"), "public-read")
+
+    def test_config_set_then_show(self):
+        r = self._run("config", "set", "--name", "second",
+                      "--provider", "aws", "--region", "us-east-1",
+                      "--bucket", "b2", "--object-acl", "public-read")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self._run("config", "show")
+        self.assertIn("[second]", r.stdout)
+        self.assertIn("object_acl = public-read", r.stdout)
+        # 部分更新：只改 region，其余保留
+        r = self._run("config", "set", "--name", "second", "--region", "us-west-2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.config_path) as f:
+            saved = json.load(f)
+        self.assertEqual(saved["profiles"]["second"]["region"], "us-west-2")
+        self.assertEqual(saved["profiles"]["second"]["bucket"], "b2")
+
+    def test_config_set_requires_bucket(self):
+        r = self._run("config", "set", "--name", "bad", "--provider", "aws")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("bucket", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

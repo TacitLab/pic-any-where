@@ -147,6 +147,40 @@ def _interactive_set_credential(profile_name):
     return 0
 
 
+def cmd_config_set(args):
+    """非交互式配置：供对话/脚本场景使用，只更新显式提供的字段，其余保留。"""
+    data = cfg.load_config()
+    name = args.name or "default"
+    existing = data.get("profiles", {}).get(name, {})
+
+    updates = {k: v for k, v in {
+        "provider": args.provider,
+        "region": args.region,
+        "bucket": args.bucket,
+        "account_id": args.account_id,
+        "endpoint": args.endpoint,
+        "addressing_style": args.addressing_style,
+        "public_base_url": args.public_base_url,
+        "key_prefix": args.key_prefix,
+        "object_acl": args.object_acl,
+    }.items() if v is not None}
+
+    profile = dict(existing)
+    profile.update(updates)
+    if not profile.get("bucket"):
+        _err("bucket 不能为空（新建 profile 必须提供 --bucket）")
+        return 1
+    if not profile.get("provider"):
+        _err("provider 不能为空（可选：aws/tencent/aliyun/cloudflare/qiniu/custom）")
+        return 1
+
+    cfg.set_profile(data, name, profile)
+    path = cfg.save_config(data)
+    print(f"配置已保存：{path}（profile={name}）")
+    print(f"云端连通性可运行 {os.path.basename(__file__)} doctor --profile {name} 验证")
+    return 0
+
+
 def cmd_config_set_credential(args):
     data = cfg.load_config()
     profile = cfg.get_profile(data, args.profile)
@@ -251,7 +285,8 @@ def cmd_upload(args):
     outputs = []
     for path in args.files:
         try:
-            key, url = uploader.upload_file(client, profile, path, key=args.key)
+            key, url = uploader.upload_file(client, profile, path, key=args.key,
+                                        prefix=args.prefix, public=args.public)
             alt = os.path.splitext(os.path.basename(path))[0]
             outputs.append(uploader.format_output(url, args.format, alt))
             if not profile.get("public_base_url"):
@@ -325,6 +360,19 @@ def build_parser():
     config_sub.add_parser("init", help="交互式初始化向导")
     config_sub.add_parser("show", help="显示当前配置（凭证脱敏）")
     config_sub.add_parser("set-credential", help="将 AK/SK 写入系统钥匙串")
+    p_set = config_sub.add_parser("set", help="非交互式写入/更新 profile 配置（适合对话/脚本场景）")
+    p_set.add_argument("--name", help="profile 名称，缺省 default")
+    p_set.add_argument("--provider", choices=sorted(providers.PROVIDERS),
+                     help="厂商：aws/tencent/aliyun/cloudflare/qiniu/custom")
+    p_set.add_argument("--region", help="region，如 ap-guangzhou")
+    p_set.add_argument("--bucket", help="bucket 名称（COS 需带 APPID 后缀）")
+    p_set.add_argument("--account-id", help="Cloudflare R2 的 account_id")
+    p_set.add_argument("--endpoint", help="自定义 endpoint（custom 厂商必填）")
+    p_set.add_argument("--addressing-style", choices=["virtual", "path"], help="寻址风格")
+    p_set.add_argument("--public-base-url", help="自定义访问域名/CDN，如 https://img.example.com")
+    p_set.add_argument("--key-prefix", help="对象 key 前缀（上传目录），如 i/ 或 blog/")
+    p_set.add_argument("--object-acl", choices=["private", "public-read"],
+                     help="上传时默认的对象 ACL，图床一般配 public-read")
 
     p_doctor = sub.add_parser("doctor", help="自检：配置 / 凭证 / 连通性",
                               parents=[common])
@@ -335,6 +383,9 @@ def build_parser():
                               parents=[common])
     p_upload.add_argument("files", nargs="+", help="图片文件路径")
     p_upload.add_argument("--key", help="自定义对象 key（仅单文件）")
+    p_upload.add_argument("--prefix", help="上传到桶内指定目录（覆盖 profile 的 key_prefix）")
+    p_upload.add_argument("--public", action="store_true",
+                          help="本次上传的对象设为公有读（x-amz-acl: public-read）")
     p_upload.add_argument("--format", choices=["url", "markdown", "html"],
                           default="url", help="输出格式")
     p_upload.add_argument("--copy", action="store_true", help="复制结果到剪贴板")
@@ -360,6 +411,7 @@ def main(argv=None):
     handlers = {
         ("config", "init"): cmd_config_init,
         ("config", "show"): cmd_config_show,
+        ("config", "set"): cmd_config_set,
         ("config", "set-credential"): cmd_config_set_credential,
     }
     if args.command == "config":

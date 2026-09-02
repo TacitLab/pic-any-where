@@ -121,14 +121,31 @@ def format_output(url: str, fmt: str, alt: str = "image") -> str:
     return url
 
 
-def upload_file(client, profile: dict, path: str, key=None):
-    """完整上传流程，返回 (key, url)。"""
+def normalize_prefix(prefix) -> str:
+    """规范化 key 前缀：去除多余斜杠，拒绝路径穿越与控制字符。"""
+    if not prefix:
+        return ""
+    parts = [p for p in str(prefix).split("/") if p]
+    if any(p in (".", "..") for p in parts) or any(ord(c) < 32 for c in prefix):
+        raise UploadError("prefix 含路径穿越成分或控制字符，已拒绝")
+    return "/".join(parts)
+
+
+def upload_file(client, profile: dict, path: str, key=None, prefix=None, public=False):
+    """完整上传流程，返回 (key, url)。
+
+    prefix 非 None 时覆盖 profile 的 key_prefix；public=True 或 profile 配置
+    object_acl=public-read 时，上传带 x-amz-acl: public-read（要求桶允许对象级 ACL）。
+    """
     data, ext, mime = read_and_validate(path, profile.get("max_size_mb", 25))
     if key:
         key = sanitize_key(key)
         if not os.path.splitext(key)[1]:
             key = f"{key}.{ext}"
     else:
-        key = build_key(data, ext, profile.get("key_prefix", "i/"))
-    client.put_object(key, data, mime, profile.get("cache_control"))
+        effective = prefix if prefix is not None else profile.get("key_prefix", "i/")
+        key = build_key(data, ext, normalize_prefix(effective))
+    # 优先级：--public 参数 > profile 的 object_acl 配置
+    acl = "public-read" if public else profile.get("object_acl")
+    client.put_object(key, data, mime, profile.get("cache_control"), acl=acl)
     return key, public_url(profile, key)

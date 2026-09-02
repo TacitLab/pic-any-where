@@ -22,7 +22,7 @@ DEFAULTS = {
 
 PROFILE_FIELDS = [
     "provider", "region", "bucket", "account_id", "endpoint",
-    "addressing_style", "public_base_url", "key_prefix",
+    "addressing_style", "public_base_url", "key_prefix", "object_acl",
     "cache_control", "max_size_mb", "insecure_http",
     "allow_file_credentials", "aws_profile",
 ]

@@ -161,8 +161,8 @@ class UploadFlowTest(unittest.TestCase):
         def __init__(self):
             self.calls = []
 
-        def put_object(self, key, data, content_type, cache_control=None):
-            self.calls.append((key, data, content_type, cache_control))
+        def put_object(self, key, data, content_type, cache_control=None, acl=None):
+            self.calls.append((key, data, content_type, cache_control, acl))
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -190,6 +190,52 @@ class UploadFlowTest(unittest.TestCase):
         client = self.FakeClient()
         key, _ = uploader.upload_file(client, profile, path, key="avatar")
         self.assertEqual(key, "avatar.png")
+
+    def test_prefix_override(self):
+        path = _write(self.tmp.name, "pic.png", PNG_BYTES)
+        profile = {"max_size_mb": 25, "key_prefix": "i/",
+                   "provider": "aws", "region": "us-east-1", "bucket": "b",
+                   "public_base_url": "https://cdn.example.com"}
+        client = self.FakeClient()
+        key, _ = uploader.upload_file(client, profile, path, prefix="blog/2024")
+        self.assertTrue(key.startswith("blog/2024/"), key)
+
+    def test_public_flag_sends_acl(self):
+        path = _write(self.tmp.name, "pic.png", PNG_BYTES)
+        profile = {"max_size_mb": 25, "provider": "aws", "region": "us-east-1",
+                   "bucket": "b", "public_base_url": "https://cdn.example.com"}
+        client = self.FakeClient()
+        uploader.upload_file(client, profile, path, public=True)
+        self.assertEqual(client.calls[0][4], "public-read")
+
+    def test_profile_object_acl_applied(self):
+        path = _write(self.tmp.name, "pic.png", PNG_BYTES)
+        profile = {"max_size_mb": 25, "object_acl": "public-read",
+                   "provider": "aws", "region": "us-east-1", "bucket": "b",
+                   "public_base_url": "https://cdn.example.com"}
+        client = self.FakeClient()
+        uploader.upload_file(client, profile, path)
+        self.assertEqual(client.calls[0][4], "public-read")
+
+    def test_no_acl_by_default(self):
+        path = _write(self.tmp.name, "pic.png", PNG_BYTES)
+        profile = {"max_size_mb": 25, "provider": "aws", "region": "us-east-1",
+                   "bucket": "b", "public_base_url": "https://cdn.example.com"}
+        client = self.FakeClient()
+        uploader.upload_file(client, profile, path)
+        self.assertIsNone(client.calls[0][4])
+
+
+class NormalizePrefixTest(unittest.TestCase):
+    def test_strip_slashes(self):
+        self.assertEqual(uploader.normalize_prefix("blog/imgs/"), "blog/imgs")
+        self.assertEqual(uploader.normalize_prefix(""), "")
+        self.assertEqual(uploader.normalize_prefix("//a//b//"), "a/b")
+
+    def test_traversal_rejected(self):
+        for bad in ("../x", "a/../b", ".", ".."):
+            with self.assertRaises(uploader.UploadError, msg=bad):
+                uploader.normalize_prefix(bad)
 
 
 if __name__ == "__main__":

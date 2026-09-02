@@ -42,10 +42,11 @@ python3 scripts/paw.py upload a.png b.jpg --format markdown --copy
 | 命令 | 说明 |
 |---|---|
 | `config init` | 交互式初始化向导 |
+| `config set --provider ... --bucket ... [--key-prefix P] [--object-acl public-read] [--public-base-url URL]` | 非交互写入/更新配置（适合在对话中完成） |
 | `config show` | 查看配置（凭证脱敏） |
 | `config set-credential` | 写入/更新钥匙串凭证 |
 | `doctor [--write]` | 自检，含云端连通与写权限探测 |
-| `upload <file...> [--key K] [--format url\|markdown\|html] [--copy]` | 上传图片 |
+| `upload <file...> [--key K] [--prefix 目录] [--public] [--format url\|markdown\|html] [--copy]` | 上传图片 |
 | `url <key> [--presign 秒]` | 生成访问链接 / 私有桶临时链接 |
 | `ls [--prefix P]` | 列出对象 |
 | `rm <key>` | 删除对象 |
